@@ -29,3 +29,22 @@ jobs:
         with:
           name: build-artifact
           path: dist/
+
+          
+  
+  deployment-check:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download build
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifact
+          path: dist
+
+      - name: Check deployment files
+        run: |
+          echo "Checking build files..."
+          ls -la dist/
+          echo "Build is ready for deployment!"
