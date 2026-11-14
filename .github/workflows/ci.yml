@@ -1,50 +1,90 @@
-name: Node.js CI Pipeline
+name: Node.js CI and EC2 Deployment
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ec2-deployment
+  cancel-in-progress: false
 
 jobs:
-  build:
+  build-and-deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      EC2_HOST: ${{ secrets.EC2_HOST }}
+      EC2_USER: ${{ secrets.EC2_USER }}
 
     steps:
-      - name: Завантаження коду репозиторію
+      - name: Завантажити код
         uses: actions/checkout@v4
 
-      - name: Встановлення Node.js
+      - name: Налаштувати Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
 
-      - name: Встановлення залежностей
-        run: npm install
+      - name: Встановити залежності та зібрати проєкт
+        run: |
+          npm install
+          node --check index.js
+          npm run build
+          cp package.json dist/
 
-      - name: Запуск білд-процесу
-        run: npm run build
-
-      - name: Збереження результату білду як артефакт
+      - name: Зберегти артефакт збірки
         uses: actions/upload-artifact@v4
         with:
           name: build-artifact
           path: dist/
+          retention-days: 7
 
-          
-  
-  deployment-check:
-    needs: build
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Download build
-        uses: actions/download-artifact@v4
-        with:
-          name: build-artifact
-          path: dist
-
-      - name: Check deployment files
+      - name: Декодувати SSH-ключ із Base64
+        env:
+          SSH_KEY_B64: ${{ secrets.EC2_SSH_KEY_B64 }}
+          KNOWN_HOSTS: ${{ secrets.EC2_KNOWN_HOSTS }}
         run: |
-          echo "Checking build files..."
-          ls -la dist/
-          echo "Build is ready for deployment!"
+          install -m 700 -d ~/.ssh
+          umask 077
+          printf '%s' "$SSH_KEY_B64" | base64 --decode > ~/.ssh/ec2_key
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/ec2_key ~/.ssh/known_hosts
+          ssh-keygen -y -f ~/.ssh/ec2_key > /dev/null
+
+      - name: Копіювати файли на EC2
+        run: |
+          rsync -av \
+            -e "ssh -i $HOME/.ssh/ec2_key -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=20" \
+            dist/ "$EC2_USER@$EC2_HOST:/home/ubuntu/nodeapp/"
+
+      - name: Запустити застосунок на EC2
+        run: |
+          ssh -i ~/.ssh/ec2_key \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=20 \
+            "$EC2_USER@$EC2_HOST" 'bash -se' <<'REMOTE'
+          cd /home/ubuntu/nodeapp
+          npm install --omit=dev
+          sudo systemctl restart nodeapp
+          curl --fail --silent --show-error \
+            --retry 10 --retry-connrefused --retry-delay 2 \
+            http://127.0.0.1:3000/
+          sudo systemctl is-active nodeapp
+          REMOTE
+
+      - name: Перевірити сайт через nginx
+        run: |
+          curl --fail --silent --show-error \
+            --retry 5 --retry-delay 2 \
+            --connect-timeout 10 --max-time 30 \
+            "http://$EC2_HOST/"
+
+      - name: Видалити тимчасовий SSH-ключ
+        if: always()
+        run: rm -f ~/.ssh/ec2_key
