@@ -1,9 +1,10 @@
 {
   "name": "nodejs-ci-practice",
   "version": "1.0.0",
-  "description": "Basic Node.js project for GitHub Actions CI",
+  "description": "Node.js application deployed to EC2",
   "main": "index.js",
   "scripts": {
-    "build": "mkdir -p dist && node index.js > dist/output.txt && cat dist/output.txt"
+    "build": "mkdir -p dist && cp index.js dist/index.js",
+    "start": "node index.js"
   }
 }
