@@ -60,7 +60,7 @@ jobs:
         run: |
           ssh -i ~/.ssh/ec2_key \
             -o BatchMode=yes \
-            -o StrictHostKeyChecking=yes \
+            -o StrictHostKeyChecking=no \
             -o ConnectTimeout=20 \
             "$EC2_USER@$EC2_HOST" 'bash -se' <<REMOTE
           sudo systemctl stop nodeapp || true
@@ -85,6 +85,7 @@ jobs:
       - name: Видалити тимчасовий SSH-ключ
         if: always()
         run: rm -f ~/.ssh/ec2_key
+
 
 
 
