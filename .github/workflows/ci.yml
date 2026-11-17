@@ -1,4 +1,4 @@
-name: Node.js CI and EC2 Deployment
+name: Node.js Docker CI and EC2 Deployment
 
 on:
   push:
@@ -20,29 +20,30 @@ jobs:
     env:
       EC2_HOST: ${{ secrets.EC2_HOST }}
       EC2_USER: ${{ secrets.EC2_USER }}
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
 
     steps:
       - name: Завантажити код
         uses: actions/checkout@v4
 
-      - name: Налаштувати Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
+      - name: Отримати короткий хеш коміту
+        id: vars
+        run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
-      - name: Встановити залежності та зібрати проєкт
-        run: |
-          npm install
-          node --check index.js
-          npm run build
-          cp package.json dist/
-
-      - name: Зберегти артефакт збірки
-        uses: actions/upload-artifact@v4
+      - name: Авторизація в Docker Hub
+        uses: docker/login-action@v3
         with:
-          name: build-artifact
-          path: dist/
-          retention-days: 7
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Збірка та пуш Docker-образу
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/nodeapp:${{ steps.vars.outputs.sha_short }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/nodeapp:latest
 
       - name: Декодувати SSH-ключ із Base64
         env:
@@ -54,37 +55,36 @@ jobs:
           printf '%s' "$SSH_KEY_B64" | base64 --decode > ~/.ssh/ec2_key
           printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/ec2_key ~/.ssh/known_hosts
-          ssh-keygen -y -f ~/.ssh/ec2_key > /dev/null
 
-      - name: Копіювати файли на EC2
-        run: |
-          rsync -av \
-            -e "ssh -i $HOME/.ssh/ec2_key -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=20" \
-            dist/ "$EC2_USER@$EC2_HOST:/home/ubuntu/nodeapp/"
-
-      - name: Запустити застосунок на EC2
+      - name: Розгорнути Docker-контейнер на EC2
         run: |
           ssh -i ~/.ssh/ec2_key \
             -o BatchMode=yes \
             -o StrictHostKeyChecking=yes \
             -o ConnectTimeout=20 \
-            "$EC2_USER@$EC2_HOST" 'bash -se' <<'REMOTE'
-          cd /home/ubuntu/nodeapp
-          npm install --omit=dev
-          sudo systemctl restart nodeapp
-          curl --fail --silent --show-error \
-            --retry 10 --retry-connrefused --retry-delay 2 \
-            http://127.0.0.1:3000/
-          sudo systemctl is-active nodeapp
-          REMOTE
+            "$EC2_USER@$EC2_HOST" 'bash -se' <<REMOTE
+          sudo systemctl stop nodeapp || true
+          sudo systemctl disable nodeapp || true
+          pm2 delete all || true
 
-      - name: Перевірити сайт через nginx
-        run: |
-          curl --fail --silent --show-error \
-            --retry 5 --retry-delay 2 \
-            --connect-timeout 10 --max-time 30 \
-            "http://$EC2_HOST/"
+          if ! command -v docker &> /dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y docker.io docker-compose-v2
+            sudo systemctl enable --now docker
+            sudo usermod -aG docker \$USER
+          fi
+
+          sudo docker pull $DOCKERHUB_USERNAME/nodeapp:${{ steps.vars.outputs.sha_short }}
+          sudo docker rm -f nodeapp || true
+          sudo docker run -d --name nodeapp --restart always -p 3000:3000 $DOCKERHUB_USERNAME/nodeapp:${{ steps.vars.outputs.sha_short }}
+
+          sleep 3
+          curl --fail --silent --show-error --retry 10 --retry-delay 2 http://127.0.0
+          REMOTE
 
       - name: Видалити тимчасовий SSH-ключ
         if: always()
         run: rm -f ~/.ssh/ec2_key
+
+
+
