@@ -66,26 +66,22 @@ jobs:
           sudo systemctl stop nodeapp || true
           sudo systemctl disable nodeapp || true
           pm2 delete all || true
-
           if ! command -v docker &> /dev/null; then
             sudo apt-get update
             sudo apt-get install -y docker.io docker-compose-v2
             sudo systemctl enable --now docker
             sudo usermod -aG docker \$USER
           fi
-
           sudo docker pull $DOCKERHUB_USERNAME/nodeapp:${{ steps.vars.outputs.sha_short }}
           sudo docker rm -f nodeapp || true
           sudo docker run -d --name nodeapp --restart always -p 3000:3000 $DOCKERHUB_USERNAME/nodeapp:${{ steps.vars.outputs.sha_short }}
-
           sleep 3
-          curl --fail --silent --show-error --retry 10 --retry-delay 2 http://127.0.0
+          curl --fail --silent --show-error --retry 10 --retry-delay 2 http://127.0.0.1:3000
           REMOTE
 
       - name: Видалити тимчасовий SSH-ключ
         if: always()
         run: rm -f ~/.ssh/ec2_key
-
 
 
 
